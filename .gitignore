@@ -12,3 +12,6 @@ scripts/probe-results.json
 scripts/probe-tier-results.json
 scripts/smoke-all-models-results.json
 *.tgz
+
+# Local task checkouts
+/worktrees/

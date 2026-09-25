@@ -4,6 +4,7 @@ import {
   AgentClientMessageSchema,
   AgentServerMessageSchema,
   ConversationStateStructureSchema,
+  InteractionQuerySchema,
   type ExecServerMessage,
 } from "../src/proto/agent_pb.js";
 import { frameConnectMessage } from "../src/client/bridge.js";
@@ -158,7 +159,7 @@ describe("Pi-only local tool routing", () => {
     expect(localToolPolicyText(tools("search_repository"))).not.toContain("No Pi MCP tools");
   });
 
-  it("still executes fetch through the async native path", async () => {
+  it("rejects native fetch without network work", async () => {
     const fetch = vi.fn().mockResolvedValue(new Response("web content"));
     vi.stubGlobal("fetch", fetch);
     try {
@@ -174,9 +175,9 @@ describe("Pi-only local tool routing", () => {
           (pending) => work.push(pending),
         ),
       ).toBe(true);
-      expect(work).toHaveLength(1);
+      expect(work).toHaveLength(0);
       await Promise.all(work);
-      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(fetch).not.toHaveBeenCalled();
       expect(onMcp).not.toHaveBeenCalled();
       expect(frames).toHaveLength(1);
       expect(fromBinary(AgentClientMessageSchema, frames[0]!.subarray(5))).toMatchObject({
@@ -187,7 +188,7 @@ describe("Pi-only local tool routing", () => {
             execId: "exec-12",
             message: {
               case: "fetchResult",
-              value: { result: { case: "success", value: { content: "web content" } } },
+              value: { result: { case: "error" } },
             },
           },
         },
@@ -469,5 +470,80 @@ describe("local tool rejection budget on the stream", () => {
     expect(resumed.error).not.toHaveBeenCalled();
     h.send(execFrame("grepArgs"));
     expect(resumed.error).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("Pi-only backend web routing", () => {
+  it.each([
+    ["webSearchRequestQuery", "webSearchRequestResponse"],
+    ["exaSearchRequestQuery", "exaSearchRequestResponse"],
+    ["exaFetchRequestQuery", "exaFetchRequestResponse"],
+  ])("rejects %s through the real stream", (request, response) => {
+    const h = harness();
+    h.send(
+      serverFrame({
+        case: "interactionQuery",
+        value: { id: 73, query: { case: request, value: {} } },
+      } as MessageInitShape<typeof AgentServerMessageSchema>["message"]),
+    );
+    expect(h.bridge.write).toHaveBeenCalledTimes(1);
+    const frame = h.bridge.write.mock.calls[0]![0] as Uint8Array;
+    const answer = fromBinary(AgentClientMessageSchema, frame.subarray(5));
+    expect(answer).toMatchObject({
+      message: {
+        case: "interactionResponse",
+        value: {
+          id: 73,
+          result: {
+            case: response,
+            value: { result: { case: "rejected" } },
+          },
+        },
+      },
+    });
+    expect(h.output.toolCall).not.toHaveBeenCalled();
+    expect(h.output.error).not.toHaveBeenCalled();
+  });
+});
+
+describe("backend web rejection lifecycle", () => {
+  function webFrame(id: number) {
+    if (id % 4 === 3) {
+      const query = create(InteractionQuerySchema, { id });
+      (
+        query as unknown as { $unknown: Array<{ no: number; wireType: number; data: Uint8Array }> }
+      ).$unknown = [{ no: 9, wireType: 2, data: new Uint8Array([0x02, 0x0a, 0x00]) }];
+      return serverFrame({ case: "interactionQuery", value: query });
+    }
+    const cases = ["webSearchRequestQuery", "exaSearchRequestQuery", "exaFetchRequestQuery"];
+    return serverFrame({
+      case: "interactionQuery",
+      value: {
+        id,
+        query: { case: cases[id % 4], value: {} },
+      },
+    } as MessageInitShape<typeof AgentServerMessageSchema>["message"]);
+  }
+
+  it("rejects unnamed web fetch field 9 through the real stream", () => {
+    const h = harness();
+    h.send(webFrame(3));
+    expect(h.bridge.write).toHaveBeenCalledTimes(1);
+    const frame = h.bridge.write.mock.calls[0]![0] as Uint8Array;
+    expect(new TextDecoder().decode(frame)).toContain("Pi");
+    expect(h.output.toolCall).not.toHaveBeenCalled();
+  });
+
+  it("stops repeated backend web requests despite heartbeat progress", () => {
+    const h = harness();
+    for (let i = 0; i < 8; i++) {
+      h.send(webFrame(i));
+      if (i < 7) {
+        h.send(progressFrame({ case: "heartbeat", value: {} }));
+        expect(h.output.error).not.toHaveBeenCalled();
+      }
+    }
+    expect(h.output.error).toHaveBeenCalledTimes(1);
+    expect(h.bridge.end).toHaveBeenCalledTimes(1);
   });
 });

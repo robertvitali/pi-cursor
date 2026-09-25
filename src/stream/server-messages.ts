@@ -5,7 +5,7 @@
  * on the same stream or the server parks waiting:
  *   - `kvServerMessage`   blob get/set against the local blob store
  *   - `execServerMessage`  tool execution — MCP calls are handed to the caller;
- *     native local tools are rejected with Pi MCP guidance; fetch runs on this stream
+ *     native local tools and fetch are rejected with Pi MCP guidance
  *   - `interactionQuery`  permission prompts, answered by ./interaction-query.ts
  *
  * Every handler returns whether it made forward progress, which is what feeds
@@ -201,7 +201,18 @@ export function processServerMessage(
   }
   if (msgCase === "interactionQuery") {
     const query = msg.message.value as InteractionQuery;
-    const result = handleInteractionQuery(query, sendFrame, { approveWeb: true });
+    // Backend web operations must use the same Pi tool boundary as local work.
+    const result = handleInteractionQuery(query, sendFrame, { approveWeb: false });
+    if (
+      [
+        "web_search_rejected",
+        "exa_search_rejected",
+        "exa_fetch_rejected",
+        "unknown_field_9_rejected",
+      ].includes(result.action)
+    ) {
+      state.localToolRejections = (state.localToolRejections ?? 0) + 1;
+    }
     lifecycleLog("interaction_query", {
       id: query.id,
       queryCase: result.queryCase,
@@ -460,6 +471,14 @@ function handleExecMessageInner(
       };
       break;
     }
+    case "fetchArgs":
+      rejection = {
+        case: "fetchResult",
+        value: {
+          result: { case: "error", value: { url: request.value.url, error: REJECT_REASON } },
+        },
+      };
+      break;
     case "grepArgs":
     case "writeShellStdinArgs":
       rejection = {

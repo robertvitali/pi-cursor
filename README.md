@@ -1,3 +1,9 @@
+> **Fork status:** This fork keeps native web search/fetch behind Pi's tool permissions.
+> Backend web operations are rejected; use explicitly exposed Pi tools instead.
+> Provider adoption is experimental until live delegation qualification passes.
+> Upstream: [Rahularya01/pi-cursor](https://github.com/Rahularya01/pi-cursor).
+> Model selection, quota-tool integration and deployment belong to the consuming Pi configuration.
+
 # @rahularya01/pi-cursor
 
 [![npm version](https://img.shields.io/npm/v/@rahularya01/pi-cursor?logo=npm)](https://www.npmjs.com/package/@rahularya01/pi-cursor)

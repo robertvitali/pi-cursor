@@ -8,6 +8,7 @@ export const LOCAL_TOOL_LOOP_ERROR =
   "Local operations must use the registered Pi MCP tools. Stopped to avoid an endless retry loop.";
 
 const LOCAL_TOOL_HINTS: Record<string, string[]> = {
+  fetchArgs: [],
   readArgs: ["read", "Read", "bash"],
   lsArgs: ["ls", "LS", "bash"],
   grepArgs: ["grep", "Grep", "bash"],
@@ -71,6 +72,7 @@ export function localToolPolicyText(tools: McpToolDefinition[]): string {
   return (
     "Local file reads, searches, directory listings, writes, deletions and shell commands " +
     "must use Pi MCP tools. Native Cursor local tools are disabled; do not call or retry them. " +
+    "Web search and fetch must also use exposed Pi tools; native web operations are disabled. " +
     (available.length
       ? (names.length ? `Local Pi MCP tools: ${names.join(", ")}. ` : "") +
         "Other exposed Pi tools may also support the operation. Follow each tool's input schema. " +
