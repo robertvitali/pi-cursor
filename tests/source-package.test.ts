@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { cpSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { expect, it } from "vitest";
@@ -27,9 +27,19 @@ it("ships the complete source entry with scripts disabled and no built dist", ()
     expect(sourceFiles.length).toBeGreaterThan(1);
     for (const path of sourceFiles) expect(paths).toContain(path);
     expect(paths.some((path) => path.startsWith("dist/"))).toBe(false);
-    expect(JSON.parse(readFileSync(join(sandbox, "package.json"), "utf8")).main).toBe(
-      "./dist/index.js",
+    const manifest = JSON.parse(
+      execFileSync("tar", ["-xOf", join(sandbox, packed[0].filename), "package/package.json"], {
+        encoding: "utf8",
+        timeout: 10_000,
+        stdio: ["ignore", "pipe", "pipe"],
+      }),
     );
+    expect(manifest.main).toBe("./dist/index.js");
+    for (const peer of ["@earendil-works/pi-ai", "@earendil-works/pi-coding-agent"]) {
+      expect(manifest.peerDependencies[peer]).toBe(">=0.80.0");
+      expect(manifest.peerDependenciesMeta?.[peer]?.optional).toBe(true);
+      expect(manifest.dependencies[peer]).toBeUndefined();
+    }
   } finally {
     rmSync(sandbox, { recursive: true, force: true });
   }
