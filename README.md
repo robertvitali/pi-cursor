@@ -193,6 +193,13 @@ Pi Coding Agent  →  streamSimple (cursor-native)
 
 ## Embedding in another Pi provider
 
+For managed installs that disable lifecycle scripts (`--ignore-scripts`), the
+package also ships `src/index.ts` and its source dependencies. A Pi TypeScript
+extension can import named APIs from `@rahularya01/pi-cursor/src/index.ts` using
+Pi's TypeScript loader, without requiring a generated `dist/` directory. If the
+consumer installs the fork under a package alias, use that alias in the import.
+The default package entry remains `dist/index.js` for normal built installs.
+
 The built package exports `createCursorNativeStream`, `getStartupCursorAccessToken`,
 `getCursorKeychainToken`, `discoverCursorCatalog`, and `cleanupSessionState`. Import these named APIs without
 calling the default extension entrypoint to reuse the native stream while the

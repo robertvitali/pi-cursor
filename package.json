@@ -32,7 +32,8 @@
     "LICENSE",
     "README.md",
     "CHANGELOG.md",
-    "dist"
+    "dist",
+    "src"
   ],
   "scripts": {
     "build": "tsup",
