@@ -37,6 +37,7 @@ import { registerCursorCommands } from "./extension/commands.js";
 
 export { createCursorNativeStream, cleanupSessionState } from "./stream/index.js";
 export { getStartupCursorAccessToken } from "./extension/auth.js";
+export { getCursorKeychainToken } from "./auth/cli-credentials.js";
 export { discoverCursorCatalog } from "./stream/model-discovery.js";
 
 export {

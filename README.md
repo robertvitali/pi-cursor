@@ -194,9 +194,15 @@ Pi Coding Agent  →  streamSimple (cursor-native)
 ## Embedding in another Pi provider
 
 The built package exports `createCursorNativeStream`, `getStartupCursorAccessToken`,
-`discoverCursorCatalog`, and `cleanupSessionState`. Import these named APIs without
+`getCursorKeychainToken`, `discoverCursorCatalog`, and `cleanupSessionState`. Import these named APIs without
 calling the default extension entrypoint to reuse the native stream while the
 consumer owns provider, model catalog, and OAuth registration.
+
+Use `getCursorKeychainToken({ forceRefresh })` when only the saved Cursor CLI
+account is authorized. It honors `PI_CURSOR_SYSTEM_CREDENTIALS` and never falls
+back to environment credentials, Pi OAuth, or the IDE credential store. A failed
+forced refresh returns no credential. `getStartupCursorAccessToken` retains the
+standalone authentication cascade.
 
 Set `PI_CURSOR_RUN_JOURNAL=0` before using the stream for ephemeral child runs.
 This disables all recovery-journal disk access, including reads, writes, directory

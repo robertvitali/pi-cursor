@@ -5,6 +5,7 @@ describe("embedding API", () => {
   it.each([
     "createCursorNativeStream",
     "getStartupCursorAccessToken",
+    "getCursorKeychainToken",
     "discoverCursorCatalog",
     "cleanupSessionState",
   ])("exports %s without activating the extension", (name) => {

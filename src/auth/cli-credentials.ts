@@ -107,9 +107,13 @@ async function readKeychainTokens(): Promise<StoredTokens> {
  * Reads token from macOS Keychain (security CLI).
  * Uses async execFile so Keychain reads don't block the event loop.
  */
-export async function getCursorKeychainToken(): Promise<CursorTokenResult | undefined> {
+export async function getCursorKeychainToken(options?: {
+  forceRefresh?: boolean;
+}): Promise<CursorTokenResult | undefined> {
+  if (!systemCredentialsAllowed()) return undefined;
   const { accessToken, refreshToken } = await readKeychainTokens();
-  if (isUsable(accessToken)) return { accessToken, source: CredentialSource.CliKeychain };
+  if (!options?.forceRefresh && isUsable(accessToken))
+    return { accessToken, source: CredentialSource.CliKeychain };
   const refreshed = await tryRefresh(refreshToken);
   return refreshed
     ? { accessToken: refreshed, source: CredentialSource.CliKeychainRefresh }
