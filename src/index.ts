@@ -35,6 +35,10 @@ import { registerCursorCommands } from "./extension/commands.js";
 
 // ── Re-exports for public API, tests, and external scripts ──
 
+export { createCursorNativeStream, cleanupSessionState } from "./stream/index.js";
+export { getStartupCursorAccessToken } from "./extension/auth.js";
+export { discoverCursorCatalog } from "./stream/model-discovery.js";
+
 export {
   extractToolResultImagePayloads,
   type CursorToolResultImagePayload,

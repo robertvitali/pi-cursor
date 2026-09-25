@@ -71,6 +71,7 @@ export interface DurableJournalRecord {
 }
 
 function journalDir(): string | undefined {
+  if (process.env.PI_CURSOR_RUN_JOURNAL === "0") return undefined;
   const base = getCacheDir();
   if (!base) return undefined;
   const dir = pathJoin(base, JOURNAL_SUBDIR);

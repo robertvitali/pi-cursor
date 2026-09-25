@@ -187,9 +187,22 @@ Pi Coding Agent  →  streamSimple (cursor-native)
 
 - **Transport:** Native Connect/protobuf streaming over HTTP/2, in-process via `h2-session.ts` — no subprocess.
 - **Infrastructure Context Normalization:** Side-channel user messages (context-mode routing, post-compaction `<session_state>`, and explicit `[pi-lens automated … not a user request]` notices) are safely normalized into the system prompt so Cursor models stay focused on your primary task.
-- **Local operations through Pi:** File reads, searches, directory listings, writes, deletions, and shell commands run through the tools registered in Pi. Native Cursor local calls are rejected with guidance to call a Pi MCP tool using its own schema; this may require an extra model response. There is no built-in local fallback when Pi lacks a suitable tool. Eight rejected local requests without a Pi tool result stop the run at a receive-chunk boundary, unless Pi calls are already awaiting results. Pending Pi calls take priority; sending their results resets the counter. Web search and fetch are unchanged. This tool policy is sent even when `PI_CURSOR_PROMPT_HISTORY=0`.
+- **Local operations through Pi:** File reads, searches, directory listings, writes, deletions, and shell commands run through the tools registered in Pi. Native Cursor local calls are rejected with guidance to call a Pi MCP tool using its own schema; this may require an extra model response. There is no built-in local fallback when Pi lacks a suitable tool. Eight rejected local requests without a Pi tool result stop the run at a receive-chunk boundary, unless Pi calls are already awaiting results. Pending Pi calls take priority; sending their results resets the counter. Native web search and fetch are also rejected and count toward the same limit; use exposed Pi tools. This tool policy is sent even when `PI_CURSOR_PROMPT_HISTORY=0`.
 - **Context-Efficient Tools:** MCP schemas are compacted without changing callable constraints, and exact conversational-only turns (`hi`, `thanks`, etc.) omit tools entirely. Actionable prompts always retain tools.
 - **Cross-Platform:** Tested and fully compatible with macOS, Linux, Windows, and WSL.
+
+## Embedding in another Pi provider
+
+The built package exports `createCursorNativeStream`, `getStartupCursorAccessToken`,
+`discoverCursorCatalog`, and `cleanupSessionState`. Import these named APIs without
+calling the default extension entrypoint to reuse the native stream while the
+consumer owns provider, model catalog, and OAuth registration.
+
+Set `PI_CURSOR_RUN_JOURNAL=0` before using the stream for ephemeral child runs.
+This disables all recovery-journal disk access, including reads, writes, directory
+creation, deletion, and stale-journal sweeping. In-memory state remains available
+until `cleanupSessionState(sessionId)` is called. Existing journals are left alone;
+the default standalone behavior continues to persist recovery journals.
 
 ## Configuration
 
