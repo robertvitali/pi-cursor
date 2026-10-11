@@ -8,7 +8,9 @@
  *
  * Everything here swallows its own errors: diagnostics must never break a turn.
  * Payloads pass through `sanitizeForDebug`, which truncates strings, summarizes
- * binary/image data, and redacts access tokens.
+ * binary/image data, and redacts recognized credential keys and patterns.
+ * Opt-in verbose logs retain conversation content; arbitrary secrets in prose
+ * cannot be identified reliably and are not guaranteed to be removed.
  */
 import { createHash } from "node:crypto";
 import { appendFile } from "node:fs";
@@ -79,14 +81,14 @@ function summarizeDebugImageUrl(url: string): unknown {
   const match = trimmed.match(/^data:([^;,]+)(?:;[^,]*)?;base64,(.*)$/is);
   if (match) {
     return {
-      mimeType: normalizeImageMimeType(match[1]!),
+      mimeType: truncateDebugString(normalizeImageMimeType(redactSecrets(match[1]!))),
       ...debugBase64ImageSummary(match[2]!),
     };
   }
   return {
     url: trimmed.startsWith("data:image/")
       ? `<redacted data image ${trimmed.length} chars>`
-      : truncateDebugString(trimmed),
+      : truncateDebugString(redactSecrets(trimmed)),
   };
 }
 
@@ -95,19 +97,24 @@ function summarizeDebugImageObject(value: Record<string, unknown>): unknown | un
   if (imageUrl && typeof imageUrl === "object") {
     const url = (imageUrl as Record<string, unknown>).url;
     if (typeof url === "string")
-      return { type: value.type ?? "image_url", image_url: summarizeDebugImageUrl(url) };
+      return {
+        type: sanitizeForDebug(value.type ?? "image_url"),
+        image_url: summarizeDebugImageUrl(url),
+      };
   }
 
   const mimeType =
-    typeof value.mimeType === "string" ? normalizeImageMimeType(value.mimeType) : undefined;
+    typeof value.mimeType === "string"
+      ? truncateDebugString(normalizeImageMimeType(redactSecrets(value.mimeType)))
+      : undefined;
   if (!mimeType?.startsWith("image/")) return undefined;
   const data = value.data;
   if (typeof data === "string") {
-    return { type: value.type, mimeType, ...debugBase64ImageSummary(data) };
+    return { type: sanitizeForDebug(value.type), mimeType, ...debugBase64ImageSummary(data) };
   }
   if (data instanceof Uint8Array || Buffer.isBuffer(data)) {
     const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
-    return { type: value.type, mimeType, ...debugByteSummary(bytes) };
+    return { type: sanitizeForDebug(value.type), mimeType, ...debugByteSummary(bytes) };
   }
   return undefined;
 }
@@ -121,6 +128,15 @@ const SENSITIVE_DEBUG_KEYS = new Set([
   "code_verifier",
   "cookie",
   "workoscursorsessiontoken",
+  "token",
+  "sessiontoken",
+  "password",
+  "passwd",
+  "secret",
+  "clientsecret",
+  "credential",
+  "credentials",
+  "xapikey",
   "apikey",
   "api_key",
 ]);
@@ -137,7 +153,7 @@ function isSensitiveDebugKey(key: string): boolean {
 
 export function sanitizeForDebug(value: unknown): unknown {
   if (value == null) return value;
-  if (typeof value === "string") return redactSecrets(truncateDebugString(value));
+  if (typeof value === "string") return truncateDebugString(redactSecrets(value));
   if (typeof value === "number" || typeof value === "boolean") return value;
   if (value instanceof Uint8Array || Buffer.isBuffer(value)) {
     const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
@@ -236,6 +252,80 @@ export function lifecycleLog(event: string, data?: Record<string, unknown>): voi
   }
   // Also mirror into verbose debug log when enabled.
   debugLog(`lifecycle.${event}`, data);
+}
+
+/**
+ * Opt-in, content-free snapshots for tracing local tools across request boundaries.
+ * Keep this shape closed: live diagnostics may record counts and JavaScript value
+ * types, never tool names, schemas, prompts, arguments, or credentials.
+ */
+export type ToolBoundaryDiagnostic =
+  | {
+      boundary: "normalized_context";
+      messageCount: number;
+      systemMessageCount: number;
+      resolvedToolCount: number;
+      bodyToolCount: number;
+      resolvedToolValueTypes: string[];
+      bodyToolValueTypes: string[];
+    }
+  | {
+      boundary: "mcp_definitions";
+      inputToolCount: number;
+      encodedMcpToolCount: number;
+      inputToolValueTypes: string[];
+      encodedMcpToolValueTypes: string[];
+    }
+  | {
+      boundary: "wire_request";
+      inputMcpToolCount: number;
+      decodedMcpToolCount: number;
+      decodedNameFieldTypes: string[];
+      decodedProviderIdentifierFieldTypes: string[];
+      decodedToolNameFieldTypes: string[];
+      decodedInputSchemaFieldTypes: string[];
+    }
+  | {
+      boundary: "server_response";
+      envelopeCategory: string;
+      branchCategory: string;
+    };
+
+let toolBoundaryDiagnosticsEnabled: boolean | undefined;
+
+export function isToolBoundaryDiagnosticsEnabled(): boolean {
+  if (toolBoundaryDiagnosticsEnabled === undefined) {
+    const raw = process.env.PI_CURSOR_TOOL_DIAGNOSTICS?.trim().toLowerCase();
+    toolBoundaryDiagnosticsEnabled = !!raw && raw !== "0" && raw !== "false" && raw !== "off";
+  }
+  return toolBoundaryDiagnosticsEnabled;
+}
+
+type ToolBoundaryDiagnosticSink = (entry: ToolBoundaryDiagnostic) => void;
+
+const defaultToolBoundaryDiagnosticSink: ToolBoundaryDiagnosticSink = (entry) => {
+  lifecycleLog("tool_boundary", entry);
+};
+
+let toolBoundaryDiagnosticSink = defaultToolBoundaryDiagnosticSink;
+
+export function emitToolBoundaryDiagnostic(entry: ToolBoundaryDiagnostic): void {
+  if (!isToolBoundaryDiagnosticsEnabled()) return;
+  try {
+    toolBoundaryDiagnosticSink(entry);
+  } catch {
+    // Never throw from diagnostics.
+  }
+}
+
+/** Test seam: re-read the opt-in flag after mutating process.env. */
+export function resetToolBoundaryDiagnosticsForTests(): void {
+  toolBoundaryDiagnosticsEnabled = undefined;
+}
+
+/** Test seam: capture content-free boundary snapshots without filesystem I/O. */
+export function setToolBoundaryDiagnosticSinkForTests(sink?: ToolBoundaryDiagnosticSink): void {
+  toolBoundaryDiagnosticSink = sink ?? defaultToolBoundaryDiagnosticSink;
 }
 
 export type MetricEmitter = (event: string, data: Record<string, unknown>) => void;

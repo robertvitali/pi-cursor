@@ -19,6 +19,7 @@ import type {
 } from "@earendil-works/pi-ai";
 
 import { redactSecrets } from "../utils/security.js";
+import { emitToolBoundaryDiagnostic } from "./debug-log.js";
 import type { CursorNativeModelRouting } from "./model-routing.js";
 import type {
   ChatCompletionRequest,
@@ -436,6 +437,15 @@ export function contextToCursorChatCompletionRequest(
   };
 
   applyNativeCursorRouting(body, config.getRawModelRoutingByModelId?.());
+  emitToolBoundaryDiagnostic({
+    boundary: "normalized_context",
+    messageCount: context.messages.length,
+    systemMessageCount: context.messages.filter(isTranscriptSystemMessage).length,
+    resolvedToolCount: tools.length,
+    bodyToolCount: body.tools?.length ?? 0,
+    resolvedToolValueTypes: tools.map((tool) => typeof tool),
+    bodyToolValueTypes: (body.tools ?? []).map((tool) => typeof tool),
+  });
   return body;
 }
 

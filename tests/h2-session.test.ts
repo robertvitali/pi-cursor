@@ -175,8 +175,13 @@ describe("in-process h2 session bridge", () => {
     const { session, streams, bridge } = sessionHarness();
     (streams[0] as unknown as { writableLength: number }).writableLength = MAX_BRIDGE_MESSAGE_BYTES;
 
+    const onClose = vi.fn();
+    bridge.onClose(onClose);
     bridge.write(new Uint8Array([1, 2, 3]));
+    bridge.write(new Uint8Array([4]));
 
+    expect(streams[0]!.write).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledExactlyOnceWith(1);
     expect(bridge.alive).toBe(false);
     expect(session.destroy).toHaveBeenCalled();
   });

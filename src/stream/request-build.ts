@@ -46,7 +46,12 @@ import {
   type UserMessage,
 } from "../proto/agent_pb.js";
 import { buildSelectedContextBlob, type CursorModelParameter } from "../client/cursor-wire.js";
-import { debugLog, requestDebugByBody } from "./debug-log.js";
+import {
+  debugLog,
+  emitToolBoundaryDiagnostic,
+  isToolBoundaryDiagnosticsEnabled,
+  requestDebugByBody,
+} from "./debug-log.js";
 import {
   buildRootPromptMessages,
   encodeRootPromptMessage,
@@ -656,6 +661,26 @@ export function buildCursorRequestFromParts(
   });
 
   const requestBytes = toBinary(AgentClientMessageSchema, clientMessage);
+  if (isToolBoundaryDiagnosticsEnabled()) {
+    const decodedEnvelope = fromBinary(AgentClientMessageSchema, requestBytes);
+    const decodedTools =
+      decodedEnvelope.message.case === "runRequest"
+        ? (decodedEnvelope.message.value.mcpTools?.mcpTools ?? [])
+        : [];
+    emitToolBoundaryDiagnostic({
+      boundary: "wire_request",
+      inputMcpToolCount: mcpTools.length,
+      decodedMcpToolCount: decodedTools.length,
+      decodedNameFieldTypes: decodedTools.map((tool) => typeof tool.name),
+      decodedProviderIdentifierFieldTypes: decodedTools.map(
+        (tool) => typeof tool.providerIdentifier,
+      ),
+      decodedToolNameFieldTypes: decodedTools.map((tool) => typeof tool.toolName),
+      decodedInputSchemaFieldTypes: decodedTools.map((tool) =>
+        tool.inputSchema instanceof Uint8Array ? "Uint8Array" : typeof tool.inputSchema,
+      ),
+    });
+  }
   const payload = {
     requestBytes,
     requestBody: requestBytes,

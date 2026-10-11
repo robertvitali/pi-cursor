@@ -180,7 +180,9 @@ import {
   debugBase64ImageSummary,
   debugLog,
   decodeRequestForTests,
+  emitToolBoundaryDiagnostic,
   emitMetric,
+  isToolBoundaryDiagnosticsEnabled,
   lifecycleLog,
   nextDebugRequestId,
   redactForDebug,
@@ -911,6 +913,7 @@ function writeNativeStream(
   // it will never recognize, so heartbeats stop counting as progress and the watchdog
   // switches to the shorter park deadline until real work resumes.
   let parkedExecCase: string | undefined;
+  const reportedResponseBranches = new Set<string>();
   // A park deadline can only be shorter than the silence deadline, and an explicitly
   // disabled watchdog stays disabled.
   const parkTimeoutMs =
@@ -1180,6 +1183,28 @@ function writeNativeStream(
       if (cancelled || streamFinalized) return;
       try {
         const serverMessage = fromBinary(AgentServerMessageSchema, messageBytes);
+        if (isToolBoundaryDiagnosticsEnabled()) {
+          const envelopeCategory = serverMessage.message.case ?? "none";
+          const branchCategory =
+            serverMessage.message.value && typeof serverMessage.message.value === "object"
+              ? String(
+                  (
+                    serverMessage.message.value as {
+                      message?: { case?: string };
+                    }
+                  ).message?.case ?? "none",
+                )
+              : "none";
+          const responseCategory = `${envelopeCategory}:${branchCategory}`;
+          if (!reportedResponseBranches.has(responseCategory)) {
+            reportedResponseBranches.add(responseCategory);
+            emitToolBoundaryDiagnostic({
+              boundary: "server_response",
+              envelopeCategory,
+              branchCategory,
+            });
+          }
+        }
         const progress = processServerMessage(
           serverMessage,
           blobStore,
@@ -1747,38 +1772,8 @@ function handleNativeToolResultResume(
     return;
   }
 
-  for (const exec of pendingExecs) {
-    const result = turnResults.get(exec.toolCallId);
-    if (!result) continue;
-    const mcpResult = create(McpResultSchema, {
-      result: {
-        case: "success",
-        value: create(McpSuccessSchema, {
-          content: buildMcpSuccessContent(result),
-          isError: result.isError === true,
-        }),
-      },
-    });
-
-    const execClientMessage = create(ExecClientMessageSchema, {
-      id: exec.execMsgId,
-      execId: exec.execId,
-      message: { case: "mcpResult" as any, value: mcpResult as any },
-    });
-    const clientMessage = create(AgentClientMessageSchema, {
-      message: { case: "execClientMessage", value: execClientMessage },
-    });
-    bridge.write(frameConnectMessage(toBinary(AgentClientMessageSchema, clientMessage)));
-    debugLog("native.tool_resume.sent_result", {
-      requestId,
-      exec,
-      contentBytes: Buffer.byteLength(result.content, "utf8"),
-      imageCount: result.images?.length ?? 0,
-    });
-  }
-
   const idleRetry: StreamIdleRetryController = {
-    // All pending Pi results have now been sent; start a new rejection budget.
+    // All pending Pi results are available; the flush below starts a new rejection budget.
     localToolRejections: 0,
     currentAttempt: 1,
     maxRetries: resolveStreamIdleMaxRetries(process.env.PI_CURSOR_STREAM_IDLE_MAX_RETRIES),
@@ -1956,6 +1951,42 @@ function handleNativeToolResultResume(
     pendingExecs,
     resumeTranscript,
   );
+  if (writer.closed) return;
+
+  // Install resumed callbacks before sending results: a write can synchronously close the
+  // bridge on failure or backpressure. HTTP/2 response data arrives after this synchronous
+  // flush, so a follow-on tool pause cannot interrupt delivery of sibling results.
+  for (const exec of pendingExecs) {
+    if (writer.closed || !bridge.alive) return;
+    const result = turnResults.get(exec.toolCallId);
+    if (!result) continue;
+    const mcpResult = create(McpResultSchema, {
+      result: {
+        case: "success",
+        value: create(McpSuccessSchema, {
+          content: buildMcpSuccessContent(result),
+          isError: result.isError === true,
+        }),
+      },
+    });
+
+    const execClientMessage = create(ExecClientMessageSchema, {
+      id: exec.execMsgId,
+      execId: exec.execId,
+      message: { case: "mcpResult" as any, value: mcpResult as any },
+    });
+    const clientMessage = create(AgentClientMessageSchema, {
+      message: { case: "execClientMessage", value: execClientMessage },
+    });
+    bridge.write(frameConnectMessage(toBinary(AgentClientMessageSchema, clientMessage)));
+    if (writer.closed || !bridge.alive) return;
+    debugLog("native.tool_resume.sent_result", {
+      requestId,
+      exec,
+      contentBytes: Buffer.byteLength(result.content, "utf8"),
+      imageCount: result.images?.length ?? 0,
+    });
+  }
 }
 
 // ── Request handling ──

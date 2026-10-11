@@ -9,6 +9,7 @@ import { create, fromJson, toBinary, type JsonValue } from "@bufbuild/protobuf";
 import { ValueSchema } from "@bufbuild/protobuf/wkt";
 
 import { McpToolDefinitionSchema, type McpToolDefinition } from "../proto/agent_pb.js";
+import { emitToolBoundaryDiagnostic } from "./debug-log.js";
 import type { OpenAIToolDef } from "./types.js";
 
 /**
@@ -161,7 +162,16 @@ export function buildMcpToolDefinitions(tools: OpenAIToolDef[]): McpToolDefiniti
   const slimEnabled = isSlimToolsEnabled();
   const byMode = mcpToolDefinitionsCache.get(tools);
   const cached = byMode?.get(slimEnabled);
-  if (cached) return cached;
+  if (cached) {
+    emitToolBoundaryDiagnostic({
+      boundary: "mcp_definitions",
+      inputToolCount: tools.length,
+      encodedMcpToolCount: cached.length,
+      inputToolValueTypes: tools.map((tool) => typeof tool),
+      encodedMcpToolValueTypes: cached.map((tool) => typeof tool),
+    });
+    return cached;
+  }
 
   const prepared = slimOpenAIToolsForCursor(tools);
   const result: McpToolDefinition[] = [];
@@ -195,5 +205,12 @@ export function buildMcpToolDefinitions(tools: OpenAIToolDef[]): McpToolDefiniti
   const modes = byMode ?? new Map<boolean, McpToolDefinition[]>();
   modes.set(slimEnabled, result);
   mcpToolDefinitionsCache.set(tools, modes);
+  emitToolBoundaryDiagnostic({
+    boundary: "mcp_definitions",
+    inputToolCount: tools.length,
+    encodedMcpToolCount: result.length,
+    inputToolValueTypes: tools.map((tool) => typeof tool),
+    encodedMcpToolValueTypes: result.map((tool) => typeof tool),
+  });
   return result;
 }

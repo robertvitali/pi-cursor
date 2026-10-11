@@ -46,12 +46,8 @@ export function redactSecrets(text: string): string {
     .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[redacted-jwt]")
     .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, "Bearer [redacted]")
     .replace(
-      /("?(?:access_token|refresh_token|accessToken|refreshToken|token|authorization|code_verifier)"?\s*[:=]\s*")[^"]*(")/gi,
-      "$1[redacted]$2",
-    )
-    .replace(
-      /("?(?:access_token|refresh_token|accessToken|refreshToken|token|authorization|code_verifier)"?\s*[:=]\s*)[^\s&,}]+/gi,
-      "$1[redacted]",
+      /(^|[^A-Za-z0-9_-])(["']?(?:access[_-]?token|refresh[_-]?token|session[_-]?token|token|authorization|code[_-]?verifier|(?:x[_-]?)?api[_-]?key|password|passwd|client[_-]?secret|secret|credentials?)["']?\s*[:=]\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|(?:Basic|Bearer)\s+[^\s&,;}]+|[^\s&,;}"']+)/gi,
+      "$1$2[redacted]",
     );
 }
 

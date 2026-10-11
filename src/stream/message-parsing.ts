@@ -144,11 +144,18 @@ export function normalizeToolResultText(
   return images?.length && content.trim() === "(see attached image)" ? "" : content;
 }
 
-export function parseToolCallArguments(raw: string): Record<string, unknown> {
+export type ToolCallJsonValue =
+  null | boolean | number | string | ToolCallJsonValue[] | ToolCallJsonObject;
+
+export interface ToolCallJsonObject {
+  [key: string]: ToolCallJsonValue;
+}
+
+export function parseToolCallArguments(raw: string): ToolCallJsonObject {
   try {
-    const parsed = JSON.parse(raw);
+    const parsed: ToolCallJsonValue = JSON.parse(raw);
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
+      return parsed;
     }
     return { value: parsed };
   } catch {

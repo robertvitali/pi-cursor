@@ -38,6 +38,16 @@ function tools(...names: string[]) {
   );
 }
 
+/** Creates one registered definition with the exact schema used by a policy assertion. */
+function toolWithParameters(name: string, parameters: Record<string, unknown>) {
+  return buildMcpToolDefinitions([
+    {
+      type: "function",
+      function: { name, description: name, parameters },
+    },
+  ]);
+}
+
 /** Builds a native request fixture with stable IDs without requiring unrelated protobuf fields. */
 function exec(caseName: string, args: object = {}, id = 12): ExecServerMessage {
   return {
@@ -128,11 +138,41 @@ describe("Pi-only local tool routing", () => {
     expect(reason).toContain("mcp_pi_grep, mcp_pi_bash");
     expect(reason).toContain("according to its schema");
     expect(reason).not.toContain("with the same arguments");
+    expect(reason).toContain("CallDynamicTool");
+    expect(reason).toContain("GetDynamicTools");
     expect(nativeToolRejectReason("grepArgs", tools("bash"))).not.toContain("mcp_pi_grep");
     const custom = nativeToolRejectReason("grepArgs", tools("search_repository"));
     expect(custom).toContain("mcp_pi_search_repository");
     expect(custom).not.toContain("mcp_pi_bash");
     expect(nativeToolRejectReason("shellArgs", [])).toContain("cannot be performed");
+    expect(nativeToolRejectReason("shellArgs", [])).not.toContain("CallDynamicTool");
+  });
+
+  it("warns that GetDynamicTools hides the pi namespace and points at CallDynamicTool", () => {
+    const policy = localToolPolicyText(
+      toolWithParameters("bash", {
+        type: "object",
+        properties: { command: { type: "string" } },
+        required: ["command"],
+      }),
+    );
+    expect(policy).toContain("not listed by GetDynamicTools");
+    expect(policy).toContain('CallDynamicTool(namespace="pi"');
+    expect(policy).toContain('mcp_pi_bash={"command"}');
+    expect(policy).toContain("do not report them as unregistered");
+    expect(localToolPolicyText([])).not.toContain("CallDynamicTool");
+  });
+
+  it("derives argument hints from the registered schema instead of a tool-name convention", () => {
+    const policy = localToolPolicyText(
+      toolWithParameters("bash", {
+        type: "object",
+        properties: { script: { type: "string" } },
+        required: ["script"],
+      }),
+    );
+    expect(policy).toContain('mcp_pi_bash={"script"}');
+    expect(policy).not.toContain('mcp_pi_bash={"command"}');
   });
 
   it.each([
@@ -149,6 +189,7 @@ describe("Pi-only local tool routing", () => {
     expect(policy).toContain("No Pi MCP tools are exposed for this request");
     expect(policy).toContain("do not call or retry them");
     expect(policy).not.toContain("No Pi MCP tools are registered");
+    expect(policy).not.toContain("CallDynamicTool");
   });
 
   it("keeps the prompt compact without hiding custom tools behind a no-tools claim", () => {
@@ -293,9 +334,12 @@ function harness(retry?: StreamIdleRetryController) {
   const controller = new AbortController();
   let onData = (_chunk: Buffer) => {};
   let onClose = (_code: number) => {};
+  let closed = false;
   const bridge = {
     proc: { kill: vi.fn(() => true) },
-    alive: true,
+    get alive() {
+      return !closed;
+    },
     lastStderr: () => "",
     write: vi.fn(),
     end: vi.fn(),
@@ -334,7 +378,10 @@ function harness(retry?: StreamIdleRetryController) {
     output,
     controller,
     send: (chunk: Buffer) => onData(chunk),
-    close: () => onClose(1),
+    close: () => {
+      closed = true;
+      onClose(1);
+    },
   };
 }
 
@@ -470,6 +517,166 @@ describe("local tool rejection budget on the stream", () => {
     expect(resumed.error).not.toHaveBeenCalled();
     h.send(execFrame("grepArgs"));
     expect(resumed.error).toHaveBeenCalledTimes(1);
+  });
+
+  it("flushes sibling results before an asynchronous follow-on Pi call", async () => {
+    const h = harness();
+    h.send(
+      Buffer.concat([
+        execFrame("mcpArgs", { toolName: "bash", toolCallId: "pi-1" }, 21),
+        execFrame("mcpArgs", { toolName: "grep", toolCallId: "pi-2" }, 22),
+      ]),
+    );
+    expect(h.output.toolCall).toHaveBeenCalledTimes(2);
+    const resultIds: string[] = [];
+
+    h.bridge.write.mockImplementation((frame: Uint8Array) => {
+      const reply = fromBinary(AgentClientMessageSchema, frame.subarray(5));
+      if (
+        reply.message.case === "execClientMessage" &&
+        reply.message.value.message.case === "mcpResult"
+      ) {
+        resultIds.push(reply.message.value.execId);
+        if (resultIds.length !== 1) return;
+        // HTTP/2 inbound data runs after the synchronous result-write stack returns.
+        queueMicrotask(() =>
+          h.send(
+            Buffer.concat([
+              progressFrame({ case: "textDelta", value: { text: "Checking another file." } }),
+              execFrame("mcpArgs", { toolName: "grep", toolCallId: "pi-3" }, 23),
+            ]),
+          ),
+        );
+      }
+    });
+
+    const resumed = writer();
+    native.handleNativeToolResultResume(
+      activeBridges.get("local-policy")!,
+      [
+        { toolCallId: "pi-1", content: "first", isError: false },
+        { toolCallId: "pi-2", content: "second", isError: false },
+      ],
+      {
+        accessToken: "unused",
+        systemPrompt: "",
+        model: {} as never,
+        modelId: "cursor-grok-4.6",
+        bridgeKey: "local-policy",
+        convKey: "local-policy",
+        sessionId: undefined,
+        completedTurns: [],
+        maxMode: false,
+        cursorModelParameters: [],
+      },
+      resumed as NativeStreamWriter,
+      { signal: h.controller.signal } as never,
+    );
+
+    expect(resultIds).toEqual(["exec-21", "exec-22"]);
+    expect(resumed.done).not.toHaveBeenCalled();
+    await Promise.resolve();
+    expect(resumed.text).toHaveBeenCalledWith("Checking another file.");
+    expect(resumed.toolCall).toHaveBeenCalledWith(
+      expect.objectContaining({ toolCallId: "pi-3", toolName: "grep" }),
+    );
+    expect(resumed.done).toHaveBeenCalledTimes(1);
+    expect(resumed.done).toHaveBeenCalledWith("toolUse", expect.anything());
+    expect(resumed.error).not.toHaveBeenCalled();
+    expect(activeBridges.get("local-policy")!.pendingExecs.map((exec) => exec.toolCallId)).toEqual([
+      "pi-3",
+    ]);
+  });
+
+  it("falls back through the resumed writer when the result write closes the bridge", () => {
+    const h = harness();
+    h.send(
+      Buffer.concat([
+        execFrame("mcpArgs", { toolName: "bash", toolCallId: "pi-1" }, 21),
+        execFrame("mcpArgs", { toolName: "grep", toolCallId: "pi-2" }, 22),
+      ]),
+    );
+    expect(h.output.done).toHaveBeenCalledWith("toolUse", expect.anything());
+
+    let resultWrites = 0;
+    h.bridge.write.mockImplementation((frame: Uint8Array) => {
+      const reply = fromBinary(AgentClientMessageSchema, frame.subarray(5));
+      if (
+        reply.message.case === "execClientMessage" &&
+        reply.message.value.message.case === "mcpResult"
+      ) {
+        resultWrites += 1;
+        if (resultWrites === 1) h.close();
+      }
+    });
+
+    const resumed = writer();
+    native.handleNativeToolResultResume(
+      activeBridges.get("local-policy")!,
+      [
+        { toolCallId: "pi-1", content: "first", isError: false },
+        { toolCallId: "pi-2", content: "second", isError: false },
+      ],
+      {
+        accessToken: "unused",
+        systemPrompt: "",
+        model: {} as never,
+        modelId: "cursor-grok-4.6",
+        bridgeKey: "local-policy",
+        convKey: "local-policy",
+        sessionId: undefined,
+        completedTurns: [],
+        maxMode: false,
+        cursorModelParameters: [],
+      },
+      resumed as NativeStreamWriter,
+      { signal: h.controller.signal } as never,
+    );
+
+    expect(h.output.error).not.toHaveBeenCalled();
+    expect(resumed.error).toHaveBeenCalledWith(
+      expect.stringContaining("Cursor tool continuation was lost"),
+      "error",
+    );
+    expect(resultWrites).toBe(1);
+  });
+
+  it("does not write a tool result when the resumed request is already aborted", () => {
+    const h = harness();
+    h.send(execFrame("mcpArgs", { toolName: "bash", toolCallId: "pi-1" }, 21));
+    h.controller.abort();
+
+    const resumed = writer();
+    native.handleNativeToolResultResume(
+      activeBridges.get("local-policy")!,
+      [{ toolCallId: "pi-1", content: "done", isError: false }],
+      {
+        accessToken: "unused",
+        systemPrompt: "",
+        model: {} as never,
+        modelId: "cursor-grok-4.6",
+        bridgeKey: "local-policy",
+        convKey: "local-policy",
+        sessionId: undefined,
+        completedTurns: [],
+        maxMode: false,
+        cursorModelParameters: [],
+      },
+      resumed as NativeStreamWriter,
+      { signal: h.controller.signal } as never,
+    );
+
+    expect(resumed.error).toHaveBeenCalledWith("Aborted", "aborted", expect.anything());
+    const replies = h.bridge.write.mock.calls.map(([frame]) =>
+      fromBinary(AgentClientMessageSchema, (frame as Uint8Array).subarray(5)),
+    );
+    expect(
+      replies.filter(
+        (reply) =>
+          reply.message.case === "execClientMessage" &&
+          reply.message.value.message.case === "mcpResult",
+      ),
+    ).toHaveLength(0);
   });
 });
 

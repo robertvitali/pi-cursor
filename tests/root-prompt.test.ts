@@ -5,7 +5,7 @@ import {
   AgentClientMessageSchema,
   ConversationStateStructureSchema,
 } from "../src/proto/agent_pb.js";
-import { buildCursorRequest } from "../src/stream/request-build.js";
+import { buildCursorRequest, buildMcpToolDefinitions } from "../src/stream/request-build.js";
 import { fingerprintCompletedTurns } from "../src/stream/recovery.js";
 import {
   buildRootPromptMessages,
@@ -150,6 +150,86 @@ describe("request build root prompt wiring", () => {
     expect(runRequest.customSystemPrompt).toBeUndefined();
     expect(runRequest.modelDetails).toBeUndefined();
     expect(runRequest.requestedModel?.modelId).toBe("cursor-grok-4.6-low");
+  });
+
+  it("replays a completed MCP continuation with its composite call id and live tools", () => {
+    const compositeId =
+      "call-b0dc2f38-6214-47b8-8efe-85358b866239-0\nfc_3fe3e9ef-9ca4-9c0a-9f1c-a4c093891b80_0";
+    const toolNames = [
+      "read",
+      "grep",
+      "find",
+      "ls",
+      "child_question",
+      "subagent_launch",
+      "subagent_wait",
+      "subagent_reply",
+      "subagent_cancel",
+      "run-readonly",
+    ];
+    const mcpTools = buildMcpToolDefinitions(
+      toolNames.map((name) => ({
+        type: "function",
+        function: {
+          name,
+          description: name,
+          parameters: {
+            type: "object",
+            properties: { path: { type: "string" } },
+          },
+        },
+      })),
+    );
+    const payload = buildCursorRequest({
+      modelId: "grok-4.7",
+      systemPrompt: "Read both files before reviewing.",
+      userText: "Continue with the second file.",
+      turns: [
+        {
+          userText: "Review this fixture.",
+          steps: [
+            {
+              kind: "toolCall",
+              toolCallId: compositeId,
+              toolName: "read",
+              arguments: { path: "SKILL.md" },
+              result: { content: "skill instructions", isError: false },
+            },
+          ],
+        },
+      ],
+      conversationId: "continuation",
+      checkpoint: null,
+      mcpTools,
+    });
+
+    const request = fromBinary(AgentClientMessageSchema, payload.requestBytes);
+    expect(request.message.case).toBe("runRequest");
+    if (request.message.case !== "runRequest") throw new Error("missing run request");
+    expect(request.message.value.mcpTools?.mcpTools).toHaveLength(10);
+
+    const messages = rootPromptMessages(payload) as Array<{
+      role: string;
+      content: Array<Record<string, unknown>>;
+    }>;
+    const replayedCall = messages
+      .find((message) => message.role === "assistant")
+      ?.content.find((part) => part.type === "tool-call");
+    const replayedResult = messages
+      .find((message) => message.role === "tool")
+      ?.content.find((part) => part.type === "tool-result");
+    expect(replayedCall).toMatchObject({
+      toolCallId: compositeId,
+      toolName: "mcp_pi_read",
+      args: { path: "SKILL.md" },
+    });
+    expect(replayedResult).toMatchObject({
+      toolCallId: compositeId,
+      toolName: "mcp_pi_read",
+      result: "skill instructions",
+    });
+    expect(JSON.stringify(messages)).toContain("CallDynamicTool");
+    expect(JSON.stringify(messages)).toContain("do not report them as unregistered");
   });
 });
 
